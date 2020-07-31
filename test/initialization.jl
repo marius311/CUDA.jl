@@ -29,7 +29,7 @@ task = @async begin
     context()
 end
 @test ctx == fetch(task)
-@test context_cb[1] == nothing
+@test context_cb[1] == ctx
 @test task_cb[1] == task
 
 device!(CuDevice(0))
@@ -47,6 +47,17 @@ end
 device_reset!()
 
 device!(0, CUDA.CU_CTX_SCHED_YIELD)
+
+# reset on a different task
+let ctx = context()
+    @test CUDA.isvalid(ctx)
+    @test ctx == fetch(@async context())
+
+    @sync @async device_reset!()
+
+    @test CUDA.isvalid(context())
+    @test ctx != context()
+end
 
 # test the device selection functionality
 if length(devices()) > 1
