@@ -1,7 +1,7 @@
 # custom extension of CuArray in CUDArt for sparse vectors/matrices
 # using CSC format for interop with Julia's native sparse functionality
 
-export CuSparseMatrixCSC, CuSparseMatrixCSR, CuSparseMatrixBSR,
+export CuSparseMatrixCSC, CuSparseMatrixCSR, CuSparseMatrixBSR, CuSparseMatrixCOO,
        CuSparseMatrix, AbstractCuSparseMatrix,
        CuSparseVector
 
@@ -14,7 +14,7 @@ import LinearAlgebra: BlasFloat, Hermitian, HermOrSym, issymmetric, Transpose, A
 
 using SparseArrays
 import SparseArrays: sparse, SparseMatrixCSC, nnz, nonzeros, nonzeroinds,
-    _spgetindex
+    _spgetindex, dimlub
 
 abstract type AbstractCuSparseArray{Tv, N} <: AbstractSparseArray{Tv, Cint, N} end
 const AbstractCuSparseVector{Tv} = AbstractCuSparseArray{Tv,1}
@@ -108,6 +108,28 @@ function CuSparseMatrixBSR!(xs::CuSparseVector)
     return
 end
 
+
+"""
+"""
+mutable struct CuSparseMatrixCOO{Tv} <: AbstractCuSparseMatrix{Tv}
+    rowInd::CuVector{Cint}
+    colInd::CuVector{Cint}
+    nzVal::CuVector{Tv}
+    dims::NTuple{2,Int}
+    nnz::Cint
+
+    function CuSparseMatrixCOO{Tv}(
+        rowInd::CuVector{Cint}, 
+        colInd::CuVector{Cint}, 
+        nzVal::CuVector{Tv}, 
+        dims::NTuple{2,Int}=(dimlub(rowInd),dimlub(colInd)), 
+        nnz::Cint=Cint(length(nzVal))
+    ) where Tv
+        new(rowInd,colInd,nzVal,dims,nnz)
+    end
+end
+
+
 """
 Utility union type of [`CuSparseMatrixCSC`](@ref), [`CuSparseMatrixCSR`](@ref),
 and `Hermitian` and `Symmetric` versions of these two containers. A function accepting
@@ -117,10 +139,10 @@ matrix if it is guaranteed to be hermitian/symmetric.
 const CompressedSparse{T} = Union{CuSparseMatrixCSC{T},CuSparseMatrixCSR{T},HermOrSym{T,CuSparseMatrixCSC{T}},HermOrSym{T,CuSparseMatrixCSR{T}}}
 
 """
-Utility union type of [`CuSparseMatrixCSC`](@ref), [`CuSparseMatrixCSR`](@ref), and
-[`CuSparseMatrixBSR`](@ref).
+Utility union type of [`CuSparseMatrixCSC`](@ref), [`CuSparseMatrixCSR`](@ref),
+[`CuSparseMatrixBSR`](@ref), [`CuSparseMatrixCOO`](@ref).
 """
-const CuSparseMatrix{T} = Union{CuSparseMatrixCSC{T},CuSparseMatrixCSR{T}, CuSparseMatrixBSR{T}}
+const CuSparseMatrix{T} = Union{CuSparseMatrixCSC{T},CuSparseMatrixCSR{T}, CuSparseMatrixBSR{T}, CuSparseMatrixCOO{T}}
 
 Hermitian{T}(Mat::CuSparseMatrix{T}) where T = Hermitian{T,typeof(Mat)}(Mat,'U')
 

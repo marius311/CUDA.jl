@@ -199,6 +199,16 @@ for (fname,elty) in ((:cusparseSbsr2csr, :Float32),
     end
 end
 
+
+function switch2csr(coo::CuSparseMatrixCOO, ind::SparseChar='O')
+    m,n = coo.dims
+    nnz = coo.nnz
+    csrRowPtr = CUDA.zeros(Cint, nnz)
+    cusparseXcoo2csr(handle(), coo.rowInd, nnz, m, csrRowPtr, ind)
+    CuSparseMatrixCSR(csrRowPtr, coo.colInd, coo.nzVal, nnz, coo.dims)
+end
+
+
 for (cname,rname,elty) in ((:cusparseScsc2dense, :cusparseScsr2dense, :Float32),
                            (:cusparseDcsc2dense, :cusparseDcsr2dense, :Float64),
                            (:cusparseCcsc2dense, :cusparseCcsr2dense, :ComplexF32),
