@@ -9,6 +9,13 @@ variables:
 
 # Julia versions
 
+julia:1.3:
+  extends:
+    - .julia:1.3
+    - .test
+  tags:
+    - nvidia
+
 julia:1.4:
   extends:
     - .julia:1.4
@@ -16,23 +23,23 @@ julia:1.4:
   tags:
     - nvidia
 
-# julia:1.4-debug:
-#   extends:
-#     - .julia:source
-#     - .test
-#   tags:
-#     - nvidia
-#   variables:
-#     CI_CLONE_ARGS: '-b v1.4.0'
-#     CI_BUILD_ARGS: 'BINARYBUILDER_LLVM_ASSERTS=1 debug'
-#   allow_failure: true
-
 julia:1.5:
   extends:
     - .julia:1.5
     - .test
   tags:
     - nvidia
+
+# julia:1.5-debug:
+#   extends:
+#     - .julia:source
+#     - .test
+#   tags:
+#     - nvidia
+#   variables:
+#     CI_CLONE_ARGS: '-b v1.5.0'
+#     CI_BUILD_ARGS: 'BINARYBUILDER_LLVM_ASSERTS=1 debug'
+#   allow_failure: true
 
 
 # CUDA versions
@@ -131,7 +138,7 @@ cuda:none:
 
 # platform:arm64:
 #   extends:
-#     - .julia:1.4
+#     - .julia:1.5
 #     - .test
 #   tags:
 #     - nvidia-arm64
@@ -142,7 +149,7 @@ cuda:none:
 
 pool:none:
   extends:
-    - .julia:1.4
+    - .julia:1.5
     - .test
   tags:
     - nvidia
@@ -151,7 +158,7 @@ pool:none:
 
 pool:simple:
   extends:
-    - .julia:1.4
+    - .julia:1.5
     - .test
   tags:
     - nvidia
@@ -160,17 +167,16 @@ pool:simple:
 
 pool:split:
   extends:
-    - .julia:1.4
+    - .julia:1.5
     - .test
   tags:
     - nvidia
   variables:
     JULIA_CUDA_MEMORY_POOL: 'split'
-  allow_failure: true
 
 debug:
   extends:
-    - .julia:1.4
+    - .julia:1.5
     - .test
   tags:
     - nvidia
@@ -184,7 +190,7 @@ debug:
 
 coverage:
   extends:
-    - .julia:1.5
+    - .julia:1.4
     - .coverage
 
 documentation:
@@ -209,8 +215,6 @@ pages:
 
 .benchmark:
   stage: post
-  extends:
-    - .julia:1.5
   interruptible: true
   tags:
     - nvidia-benchmark

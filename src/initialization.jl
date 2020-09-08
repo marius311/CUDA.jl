@@ -67,15 +67,13 @@ function __init__()
     # enable generation of FMA instructions to mimic behavior of nvcc
     LLVM.clopts("-nvptx-fma-level=1")
 
-    resize!(thread_contexts, Threads.nthreads())
-    fill!(thread_contexts, nothing)
+    resize!(thread_state, Threads.nthreads())
+    fill!(thread_state, nothing)
 
     resize!(thread_tasks, Threads.nthreads())
     fill!(thread_tasks, nothing)
 
     initializer(prepare_cuda_call)
-
-    __init_memory__()
 
     @require ForwardDiff="f6369f11-7733-5829-9624-2563aa707210" include("forwarddiff.jl")
 end
@@ -132,7 +130,15 @@ function __runtime_init__()
         end
     end
 
+    resize!(device_contexts, ndevices())
+    fill!(device_contexts, nothing)
+
     __init_compatibility__()
+
+    __init_pool__()
+
+    CUBLAS.__runtime_init__()
+    has_cudnn() && CUDNN.__runtime_init__()
 
     return
 end

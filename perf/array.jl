@@ -1,12 +1,15 @@
 group = addgroup!(SUITE, "array")
 
+const m = 512
+const n = 1000
+
 # generate some arrays
-cpu_mat = rand(Float32, 512, 1000)
+cpu_mat = rand(rng, Float32, m, n)
 gpu_mat = CuArray{Float32}(undef, size(cpu_mat))
 gpu_vec = reshape(gpu_mat, length(gpu_mat))
-gpu_mat_ints = CuArray(rand(Int, 512, 1000))
+gpu_mat_ints = CuArray(rand(rng, Int, m, n))
 gpu_vec_ints = reshape(gpu_mat_ints, length(gpu_mat_ints))
-gpu_mat_bools = CuArray(rand(Bool, 512, 1000))
+gpu_mat_bools = CuArray(rand(rng, Bool, m, n))
 gpu_vec_bools = reshape(gpu_mat_bools, length(gpu_mat_bools))
 
 group["construct"] = @benchmarkable CuArray{Int}(undef, 1)
@@ -64,4 +67,26 @@ let group = addgroup!(group, "reductions")
     end
 
     # used by sum, prod, minimum, maximum, all, any, count
+end
+
+let group = addgroup!(group, "random")
+    let group = addgroup!(group, "rand")
+        group["Float32"] = @async_benchmarkable CUDA.rand(Float32, m*n)
+        group["Int64"] = @async_benchmarkable CUDA.rand(Int64, m*n)
+    end
+
+    let group = addgroup!(group, "rand!")
+        group["Float32"] = @async_benchmarkable CUDA.rand!($gpu_vec)
+        group["Int64"] = @async_benchmarkable CUDA.rand!($gpu_vec_ints)
+    end
+
+    let group = addgroup!(group, "randn")
+        group["Float32"] = @async_benchmarkable CUDA.randn(Float32, m*n)
+        #group["Int64"] = @async_benchmarkable CUDA.randn(Int64, m*n)
+    end
+
+    let group = addgroup!(group, "randn!")
+        group["Float32"] = @async_benchmarkable CUDA.randn!($gpu_vec)
+        #group["Int64"] = @async_benchmarkable CUDA.randn!($gpu_vec_ints)
+    end
 end

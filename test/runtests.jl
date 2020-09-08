@@ -11,7 +11,7 @@ function extract_flag!(args, flag, default=nothing)
             # Check if it's just `--flag` or if it's `--flag=foo`
             if f != flag
                 val = split(f, '=')[2]
-                if default !== nothing
+                if default !== nothing && !(typeof(default) <: AbstractString)
                   val = parse(typeof(default), val)
                 end
             else
@@ -30,12 +30,12 @@ if do_help
     println("""
         Usage: runtests.jl [--help] [--list] [--jobs=N] [TESTS...]
 
-               --help           Show this text.
-               --list           List all available tests.
-               --jobs=N         Launch `N` processes to perform tests (default: Threads.nthreads()).
-               --gpus=N         Expose `N` GPUs to test processes (default: 1).
-               --memcheck       Run the tests under `cuda-memcheck`.
-               --snoop=FILE     Snoop on compiled methods and save to `FILE`.
+               --help             Show this text.
+               --list             List all available tests.
+               --jobs=N           Launch `N` processes to perform tests (default: Threads.nthreads()).
+               --gpus=N           Expose `N` GPUs to test processes (default: 1).
+               --memcheck[=tool]  Run the tests under `cuda-memcheck`.
+               --snoop=FILE       Snoop on compiled methods and save to `FILE`.
 
                Remaining arguments filter the tests that will be executed.
                This list of tests, and all other options, can also be specified using the
@@ -44,7 +44,7 @@ if do_help
 end
 _, jobs = extract_flag!(cli_args, "--jobs", Threads.nthreads())
 _, gpus = extract_flag!(cli_args, "--gpus", 1)
-do_memcheck, _ = extract_flag!(cli_args, "--memcheck")
+do_memcheck, memcheck_tool = extract_flag!(cli_args, "--memcheck", "memcheck")
 do_snoop, snoop_path = extract_flag!(cli_args, "--snoop")
 
 include("setup.jl")     # make sure everything is precompiled
@@ -178,18 +178,20 @@ if Sys.ARCH == :aarch64
     # CUFFT segfaults on ARM
     push!(skip_tests, "cufft")
 end
+for (i, test) in enumerate(skip_tests)
+    # we find tests by scanning the file system, so make sure the path separator matches
+    skip_tests[i] = replace(test, '/'=>Base.Filesystem.path_separator)
+end
+filter!(in(tests), skip_tests) # only skip tests that we were going to run
 if haskey(ENV, "CI_THOROUGH")
-    all_tests = copy(tests)
     # we're not allowed to skip tests, so make sure we will mark them as such
+    all_tests = copy(tests)
     if !isempty(skip_tests)
-        filter!(!in(skip_tests), tests)
         @error "Skipping the following tests: $(join(skip_tests, ", "))"
+        filter!(!in(skip_tests), tests)
     end
 else
     if !isempty(skip_tests)
-        for (i, test) in enumerate(skip_tests)
-            skip_tests[i] = replace(test, '/'=>Base.Filesystem.path_separator)
-        end
         @info "Skipping the following tests: $(join(skip_tests, ", "))"
         filter!(!in(skip_tests), tests)
     end
@@ -210,7 +212,7 @@ end
 const test_exename = popfirst!(test_exeflags.exec)
 function addworker(X; kwargs...)
     exename = if do_memcheck
-        `cuda-memcheck $test_exename`
+        `cuda-memcheck --tool $memcheck_tool $test_exename`
     else
         test_exename
     end
@@ -348,13 +350,16 @@ try
                     test = popfirst!(tests)
                     local resp
                     wrkr = p
-                    can_initialize = test!="initialization"
                     snoop = do_snoop ? mktemp() : (nothing, nothing)
+
+                    # tests that muck with the context should not be timed with CUDA events,
+                    # since they won't be valid at the end of the test anymore.
+                    time_source = in(test, ["initialization", "examples", "exceptions"]) ? :julia : :cuda
 
                     # run the test
                     running_tests[test] = now()
                     try
-                        resp = remotecall_fetch(runtests, wrkr, test_runners[test], test, can_initialize, snoop[1])
+                        resp = remotecall_fetch(runtests, wrkr, test_runners[test], test, time_source, snoop[1])
                     catch e
                         isa(e, InterruptException) && return
                         resp = Any[e]

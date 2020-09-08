@@ -9,40 +9,27 @@ using ..CUDA: @enum_without_prefix, CUstream, CUdevice, CuDim3, CUarray, CUarray
 
 using Base: @deprecate_binding
 
-
-# TODO: needs another redesign
-#
-# - Buffers should be typed, since ArrayBuffers are tied to a format.
-#   untyped buffers can use T=UInt8 or T=Nothing and reinterpret the output pointer
-#   (this is impossible with textures, though)
-# - copyto! methods should take a Buffer so that we can populate the memcpy structs directly
-# - allocate buffers on construction, instead of using an alloc method? free on finalizer?
-# - have CuArray contain a buffer, use that for dispatch.
-# - trait to determine which pointers a buffer can yield?
+using Printf
 
 
 #
-# untyped buffers
+# buffers
 #
 
-abstract type Buffer end
+# a chunk of memory allocated using the CUDA APIs. this memory can reside on the host, on
+# the gpu, or can represent specially-formatted memory (like texture arrays). depending on
+# all that, the buffer may be `convert`ed to a Ptr, CuPtr, or CuArrayPtr.
 
-# expected interface:
-# - similar()
-# - ptr, bytesize and ctx fields
-# - convert() to Ptr and CuPtr
+abstract type AbstractBuffer end
 
-Base.pointer(buf::Buffer) = buf.ptr
-
-Base.sizeof(buf::Buffer) = buf.bytesize
-
-CUDA.device(buf::Buffer) = device(buf.ctx)
+Base.convert(T::Type{<:Union{Ptr,CuPtr,CuArrayPtr}}, buf::AbstractBuffer) =
+    throw(ArgumentError("Illegal conversion of a $(typeof(buf)) to a $T"))
 
 # ccall integration
 #
 # taking the pointer of a buffer means returning the underlying pointer,
 # and not the pointer of the buffer object itself.
-Base.unsafe_convert(T::Type{<:Union{Ptr,CuPtr,CuArrayPtr}}, buf::Buffer) = convert(T, buf)
+Base.unsafe_convert(T::Type{<:Union{Ptr,CuPtr,CuArrayPtr}}, buf::AbstractBuffer) = convert(T, buf)
 
 
 ## device buffer
@@ -53,18 +40,16 @@ Base.unsafe_convert(T::Type{<:Union{Ptr,CuPtr,CuArrayPtr}}, buf::Buffer) = conve
 
 A buffer of device memory residing on the GPU.
 """
-struct DeviceBuffer <: Buffer
+struct DeviceBuffer <: AbstractBuffer
     ptr::CuPtr{Cvoid}
     bytesize::Int
-    ctx::CuContext
 end
 
-Base.similar(buf::DeviceBuffer, ptr::CuPtr{Cvoid}=pointer(buf),
-             bytesize::Int=sizeof(buf), ctx::CuContext=buf.ctx) =
-    DeviceBuffer(ptr, bytesize, ctx)
+Base.pointer(buf::DeviceBuffer) = buf.ptr
+Base.sizeof(buf::DeviceBuffer) = buf.bytesize
 
-Base.convert(::Type{<:Ptr}, buf::DeviceBuffer) =
-    throw(ArgumentError("cannot take the CPU address of a GPU buffer"))
+Base.show(io::IO, buf::DeviceBuffer) =
+    @printf(io, "DeviceBuffer(%s at %p)", Base.format_bytes(sizeof(buf)), Int(pointer(buf)))
 
 Base.convert(::Type{CuPtr{T}}, buf::DeviceBuffer) where {T} =
     convert(CuPtr{T}, pointer(buf))
@@ -78,12 +63,12 @@ GPU, and requires explicit calls to `unsafe_copyto!`, which wraps `cuMemcpy`,
 for access on the CPU.
 """
 function alloc(::Type{DeviceBuffer}, bytesize::Integer)
-    bytesize == 0 && return DeviceBuffer(CU_NULL, 0, CuContext(C_NULL))
+    bytesize == 0 && return DeviceBuffer(CU_NULL, 0)
 
     ptr_ref = Ref{CUDA.CUdeviceptr}()
     CUDA.cuMemAlloc_v2(ptr_ref, bytesize)
 
-    return DeviceBuffer(reinterpret(CuPtr{Cvoid}, ptr_ref[]), bytesize, CuCurrentContext())
+    return DeviceBuffer(reinterpret(CuPtr{Cvoid}, ptr_ref[]), bytesize)
 end
 
 
@@ -100,19 +85,20 @@ end
     Mem.HostBuffer
     Mem.Host
 
-A buffer of pinned memory on the CPU, possible accessible on the GPU.
+A buffer of pinned memory on the CPU, possibly accessible on the GPU.
 """
-struct HostBuffer <: Buffer
+struct HostBuffer <: AbstractBuffer
     ptr::Ptr{Cvoid}
     bytesize::Int
-    ctx::CuContext
 
     mapped::Bool
 end
 
-Base.similar(buf::HostBuffer, ptr::Ptr{Cvoid}=pointer(buf), bytesize::Int=sizeof(buf),
-             ctx::CuContext=buf.ctx, mapped::Bool=buf.mapped) =
-    HostBuffer(ptr, bytesize, ctx, mapped)
+Base.pointer(buf::HostBuffer) = buf.ptr
+Base.sizeof(buf::HostBuffer) = buf.bytesize
+
+Base.show(io::IO, buf::HostBuffer) =
+    @printf(io, "HostBuffer(%s at %p)", Base.format_bytes(sizeof(buf)), Int(pointer(buf)))
 
 Base.convert(::Type{Ptr{T}}, buf::HostBuffer) where {T} =
     convert(Ptr{T}, pointer(buf))
@@ -149,13 +135,13 @@ multiple devices. Multiple `flags` can be set at one time using a bytewise `OR`:
 
 """
 function alloc(::Type{HostBuffer}, bytesize::Integer, flags=0)
-    bytesize == 0 && return HostBuffer(C_NULL, 0, CuContext(C_NULL), false)
+    bytesize == 0 && return HostBuffer(C_NULL, 0, false)
 
     ptr_ref = Ref{Ptr{Cvoid}}()
     CUDA.cuMemHostAlloc(ptr_ref, bytesize, flags)
 
     mapped = (flags & HOSTALLOC_DEVICEMAP) != 0
-    return HostBuffer(ptr_ref[], bytesize, CuCurrentContext(), mapped)
+    return HostBuffer(ptr_ref[], bytesize, mapped)
 end
 
 
@@ -178,7 +164,7 @@ function register(::Type{HostBuffer}, ptr::Ptr, bytesize::Integer, flags=0)
     CUDA.cuMemHostRegister_v2(ptr, bytesize, flags)
 
     mapped = (flags & HOSTREGISTER_DEVICEMAP) != 0
-    return HostBuffer(ptr, bytesize, CuCurrentContext(), mapped)
+    return HostBuffer(ptr, bytesize, mapped)
 end
 
 """
@@ -206,15 +192,16 @@ end
 
 A managed buffer that is accessible on both the CPU and GPU.
 """
-struct UnifiedBuffer <: Buffer
+struct UnifiedBuffer <: AbstractBuffer
     ptr::CuPtr{Cvoid}
     bytesize::Int
-    ctx::CuContext
 end
 
-Base.similar(buf::UnifiedBuffer, ptr::CuPtr{Cvoid}=pointer(buf),
-             bytesize::Int=sizeof(buf), ctx::CuContext=buf.ctx) =
-    UnifiedBuffer(ptr, bytesize, ctx)
+Base.pointer(buf::UnifiedBuffer) = buf.ptr
+Base.sizeof(buf::UnifiedBuffer) = buf.bytesize
+
+Base.show(io::IO, buf::UnifiedBuffer) =
+    @printf(io, "UnifiedBuffer(%s at %p)", Base.format_bytes(sizeof(buf)), Int(pointer(buf)))
 
 Base.convert(::Type{Ptr{T}}, buf::UnifiedBuffer) where {T} =
     convert(Ptr{T}, reinterpret(Ptr{Cvoid}, pointer(buf)))
@@ -232,12 +219,12 @@ GPU, with the CUDA driver automatically copying upon first access.
 """
 function alloc(::Type{UnifiedBuffer}, bytesize::Integer,
               flags::CUDA.CUmemAttach_flags=ATTACH_GLOBAL)
-    bytesize == 0 && return UnifiedBuffer(CU_NULL, 0, CuContext(C_NULL))
+    bytesize == 0 && return UnifiedBuffer(CU_NULL, 0)
 
     ptr_ref = Ref{CuPtr{Cvoid}}()
     CUDA.cuMemAllocManaged(ptr_ref, bytesize, flags)
 
-    return UnifiedBuffer(ptr_ref[], bytesize, CuCurrentContext())
+    return UnifiedBuffer(ptr_ref[], bytesize)
 end
 
 
@@ -254,7 +241,7 @@ end
 Prefetches memory to the specified destination device.
 """
 function prefetch(buf::UnifiedBuffer, bytes::Integer=sizeof(buf);
-                  device::CuDevice=device(buf), stream::CuStream=CuDefaultStream())
+                  device::CuDevice=CuCurrentDevice(), stream::CuStream=CuDefaultStream())
     bytes > sizeof(buf) && throw(BoundsError(buf, bytes))
     CUDA.cuMemPrefetchAsync(buf, bytes, device, stream)
 end
@@ -268,7 +255,7 @@ end
 Advise about the usage of a given memory range.
 """
 function advise(buf::UnifiedBuffer, advice::CUDA.CUmem_advise, bytes::Integer=sizeof(buf);
-                device::CuDevice=device(buf))
+                device::CuDevice=CuCurrentDevice())
     bytes > sizeof(buf) && throw(BoundsError(buf, bytes))
     CUDA.cuMemAdvise(buf, bytes, advice, device)
 end
@@ -276,14 +263,28 @@ end
 
 ## array buffer
 
-mutable struct ArrayBuffer{T,N} <: Buffer
+mutable struct ArrayBuffer{T,N} <: AbstractBuffer
     ptr::CuArrayPtr{T}
     dims::Dims{N}
-    ctx::CuContext
 end
 
-Base.convert(::Type{CuArrayPtr{T}}, buf::ArrayBuffer) where {T} =
+Base.pointer(buf::ArrayBuffer) = buf.ptr
+Base.sizeof(buf::ArrayBuffer) = error("Opaque array buffers do not have a definite size")
+Base.size(buf::ArrayBuffer) = buf.dims
+Base.length(buf::ArrayBuffer) = prod(buf.dims)
+Base.ndims(buf::ArrayBuffer{<:Any,N}) where {N} = N
+
+Base.show(io::IO, buf::ArrayBuffer{T,1}) where {T} =
+    @printf(io, "%g-element ArrayBuffer{%s,%g}(%p)", length(buf), string(T), 1, Int(pointer(buf)))
+Base.show(io::IO, buf::ArrayBuffer{T}) where {T} =
+    @printf(io, "%s ArrayBuffer{%s,%g}(%p)", Base.inds2string(size(buf)), string(T), ndims(buf), Int(pointer(buf)))
+
+# array buffers are typed, so refuse arbitrary conversions
+Base.convert(::Type{CuArrayPtr{T}}, buf::ArrayBuffer{T}) where {T} =
     convert(CuArrayPtr{T}, pointer(buf))
+# ... except for CuArrayPtr{Nothing}, which is used to call untyped API functions
+Base.convert(::Type{CuArrayPtr{Nothing}}, buf::ArrayBuffer)  =
+    convert(CuArrayPtr{Nothing}, pointer(buf))
 
 function alloc(::Type{<:ArrayBuffer{T}}, dims::Dims{N}) where {T,N}
     format = convert(CUarray_format, eltype(T))
@@ -324,7 +325,7 @@ function alloc(::Type{<:ArrayBuffer{T}}, dims::Dims{N}) where {T,N}
     CUDA.cuArray3DCreate_v2(handle_ref, allocateArray_ref)
     ptr = reinterpret(CuArrayPtr{T}, handle_ref[])
 
-    return ArrayBuffer{T,N}(ptr, dims, CuCurrentContext())
+    return ArrayBuffer{T,N}(ptr, dims)
 end
 
 function free(buf::ArrayBuffer)
@@ -342,7 +343,7 @@ const Array   = ArrayBuffer
 
 
 #
-# typed pointers
+# pointers
 #
 
 ## initialization
@@ -377,9 +378,9 @@ end
 
 ## copy operations
 
-for (f, fa, srcPtrTy, dstPtrTy) in (("cuMemcpyDtoH_v2", "cuMemcpyDtoHAsync_v2", CuPtr,      Ptr),
-                                    ("cuMemcpyHtoD_v2", "cuMemcpyHtoDAsync_v2", Ptr,        CuPtr),
-                                    ("cuMemcpyDtoD_v2", "cuMemcpyDtoDAsync_v2", CuPtr,      CuPtr),
+for (f, fa, srcPtrTy, dstPtrTy) in (("cuMemcpyDtoH_v2", "cuMemcpyDtoHAsync_v2", CuPtr, Ptr),
+                                    ("cuMemcpyHtoD_v2", "cuMemcpyHtoDAsync_v2", Ptr,   CuPtr),
+                                    ("cuMemcpyDtoD_v2", "cuMemcpyDtoDAsync_v2", CuPtr, CuPtr),
                                    )
     @eval function Base.unsafe_copyto!(dst::$dstPtrTy{T}, src::$srcPtrTy{T}, N::Integer;
                                        stream::Union{Nothing,CuStream}=nothing,
@@ -437,8 +438,8 @@ Base.unsafe_copyto!(dst::CuArrayPtr, src, N::Integer; kwargs...) =
 Base.unsafe_copyto!(dst, src::CuArrayPtr, N::Integer; kwargs...) =
     Base.unsafe_copyto!(dst, src, 0, N; kwargs...)
 
-function unsafe_copy2d!(dst::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, dstTyp::Type{<:Buffer},
-                        src::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, srcTyp::Type{<:Buffer},
+function unsafe_copy2d!(dst::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, dstTyp::Type{<:AbstractBuffer},
+                        src::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, srcTyp::Type{<:AbstractBuffer},
                         width::Integer, height::Integer=1;
                         dstPos::CuDim=(1,1), srcPos::CuDim=(1,1),
                         dstPitch::Integer=0, srcPitch::Integer=0,
@@ -526,8 +527,8 @@ and `dstPos` (1-indexed). Both pitch and destination can be specified for both t
 and destination; consult the CUDA documentation for more details. This call is executed
 asynchronously if `async` is set, in which case `stream` needs to be a valid CuStream.
 """
-function unsafe_copy3d!(dst::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, dstTyp::Type{<:Buffer},
-                        src::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, srcTyp::Type{<:Buffer},
+function unsafe_copy3d!(dst::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, dstTyp::Type{<:AbstractBuffer},
+                        src::Union{Ptr{T},CuPtr{T},CuArrayPtr{T}}, srcTyp::Type{<:AbstractBuffer},
                         width::Integer, height::Integer=1, depth::Integer=1;
                         dstPos::CuDim=(1,1,1), srcPos::CuDim=(1,1,1),
                         dstPitch::Integer=0, dstHeight::Integer=0,
@@ -614,17 +615,24 @@ end
 #
 
 ## memory pinning
-const __pinned_memory = Dict{Ptr, WeakRef}()
+# TODO: PerDevice
+const __pinned_memory = Dict{Tuple{CuContext,Ptr{Cvoid}}, WeakRef}()
 function pin(a::Base.Array, flags=0)
-    # use pointer instead of objectid?
-    ptr = pointer(a)
-    if haskey(__pinned_memory, ptr) && __pinned_memory[ptr].value !== nothing
-        return nothing
+    ctx = context()
+    ptr = convert(Ptr{Cvoid}, pointer(a))
+    if haskey(__pinned_memory, (ctx,ptr)) && __pinned_memory[(ctx,ptr)].value !== nothing
+        return
     end
-    ad = Mem.register(Mem.Host, pointer(a), sizeof(a), flags)
-    finalizer(_ -> Mem.unregister(ad), a)
-    __pinned_memory[ptr] = WeakRef(a)
-    return nothing
+
+    buf = Mem.register(Mem.Host, pointer(a), sizeof(a), flags)
+    finalizer(a) do _
+        CUDA.isvalid(ctx) || return
+        context!(ctx) do
+            Mem.unregister(buf)
+        end
+    end
+    __pinned_memory[(ctx,ptr)] = WeakRef(a)
+    return
 end
 
 ## memory info

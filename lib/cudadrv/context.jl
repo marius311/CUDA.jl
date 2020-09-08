@@ -2,7 +2,7 @@
 
 export
     CuContext, CuCurrentContext, activate,
-    synchronize, device
+    synchronize, CuCurrentDevice
 
 
 ## construction and destruction
@@ -46,6 +46,15 @@ isvalid(ctx::CuContext) = any(x->x==ctx, values(valid_contexts))
 function invalidate!(ctx::CuContext)
     delete!(valid_contexts, ctx.handle)
     return
+end
+
+function Base.show(io::IO, ctx::CuContext)
+    fields = [@sprintf("%p", ctx.handle), @sprintf("instance %x", objectid(ctx))]
+    if !isvalid(ctx)
+        push!(fields, "invalidated")
+    end
+
+    print(io, "CuContext(", join(fields, ", "), ")")
 end
 
 """
@@ -125,22 +134,31 @@ end
 ## context properties
 
 """
-    device()
-    device(ctx::CuContext)
+    CuCurrentDevice()
+
+Returns the current device, or `nothing` if there is no active device.
+"""
+function CuCurrentDevice()
+    device_ref = Ref{CUdevice}()
+    res = unsafe_cuCtxGetDevice(device_ref)
+    if res == ERROR_INVALID_CONTEXT
+        return nothing
+    elseif res != SUCCESS
+        throw_api_error(res)
+    end
+    return CuDevice(Bool, device_ref[])
+end
+
+"""
+    CuDevice(::CuContext)
 
 Returns the device for a context.
 """
-function device(ctx::CuContext)
+function CuDevice(ctx::CuContext)
     push!(CuContext, ctx)
-    device_ref = Ref{CUdevice}()
-    cuCtxGetDevice(device_ref)
+    dev = CuCurrentDevice()
     pop!(CuContext)
-    return CuDevice(Bool, device_ref[])
-end
-function device()
-    device_ref = Ref{CUdevice}()
-    cuCtxGetDevice(device_ref)
-    return CuDevice(Bool, device_ref[])
+    return dev
 end
 
 """

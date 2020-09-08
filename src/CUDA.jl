@@ -25,6 +25,7 @@ include("../lib/cudadrv/CUDAdrv.jl")
 # essential stuff
 include("initialization.jl")
 include("state.jl")
+include("debug.jl")
 
 # binary dependencies
 include("../deps/discovery.jl")
