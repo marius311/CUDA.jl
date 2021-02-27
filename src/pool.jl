@@ -155,19 +155,17 @@ function actual_free(dev::CuDevice, block::Block)
   @assert block.off == 0
   @assert block.state == AVAILABLE "Cannot free $block: block is not available"
 
-  @device! dev begin
-    # free the memory
-    @timeit_debug alloc_to "free" begin
-      time = Base.@elapsed begin
-        Mem.free(block.buf; async=true)
-      end
-      block.state = INVALID
-
-      Threads.atomic_sub!(usage[dev], sizeof(block.buf))
-      alloc_stats.actual_time += time
-      alloc_stats.actual_nfree += 1
-      alloc_stats.actual_free += sizeof(block.buf)
+  # free the memory
+  @timeit_debug alloc_to "free" begin
+    time = Base.@elapsed begin
+      Mem.free(block.buf; async=true)
     end
+    block.state = INVALID
+
+    Threads.atomic_sub!(usage[dev], sizeof(block.buf))
+    alloc_stats.actual_time += time
+    alloc_stats.actual_nfree += 1
+    alloc_stats.actual_free += sizeof(block.buf)
   end
 
   return
@@ -327,11 +325,10 @@ end
 
 Releases a buffer pointed to by `ptr` to the memory pool.
 """
-@inline function free(ptr::CuPtr{Nothing})
+@inline function free(ptr::CuPtr{Nothing}, dev=device())
   # 0-byte allocations shouldn't hit the pool
   ptr == CU_NULL && return
 
-  dev = device()
   last_use[dev] = time()
 
   if MEMDEBUG && ptr == CuPtr{Cvoid}(0xbbbbbbbbbbbbbbbb)

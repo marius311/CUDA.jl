@@ -39,9 +39,7 @@ function unsafe_free!(xs::CuArray)
   end
 
   if isvalid(xs.ctx)
-    context!(xs.ctx) do
-      free(xs.baseptr)
-    end
+    free(xs.baseptr, CuDevice(findfirst(==(xs.ctx), __device_contexts)-1))
   end
   xs.state = ARRAY_FREED
 
